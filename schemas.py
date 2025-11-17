@@ -25,6 +25,10 @@ class DeckCard(BaseModel):
     type_line: Optional[str] = Field(None, description="Type line from Scryfall")
     colors: Optional[List[str]] = Field(default=None, description="List of colors from Scryfall")
     image_small: Optional[str] = Field(default=None, description="Small image URL for display")
+    image_front_small: Optional[str] = Field(default=None)
+    image_back_small: Optional[str] = Field(default=None)
+    cmc: Optional[float] = Field(default=None, description="Converted mana cost (Scryfall cmc)")
+    color_identity: Optional[List[str]] = Field(default=None, description="Scryfall color identity")
 
 class Deck(BaseModel):
     """Deck collection schema (collection name: deck)"""
@@ -43,6 +47,10 @@ class Deck(BaseModel):
     ]] = Field(default="casual", description="Intended play format")
     description: Optional[str] = Field(default=None, max_length=500)
     cards: List[DeckCard] = Field(default_factory=list, description="List of cards in the deck")
+    # Commander-specific metadata (optional)
+    commander_id: Optional[str] = Field(default=None, description="Scryfall ID of the commander")
+    commander_name: Optional[str] = Field(default=None)
+    commander_colors: Optional[List[str]] = Field(default=None, description="Commander color identity (WUBRG)")
 
 # Example schemas (kept for reference)
 class User(BaseModel):

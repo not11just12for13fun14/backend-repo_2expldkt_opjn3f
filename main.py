@@ -92,6 +92,9 @@ def map_scryfall_card(card: Dict[str, Any]) -> Dict[str, Any]:
     type_line = card.get("type_line")
     oracle_text = card.get("oracle_text")
     colors = card.get("colors")
+    cmc = card.get("cmc")
+    color_identity = card.get("color_identity")
+    prices = card.get("prices") or {}
 
     if not mana_cost and card.get("card_faces"):
         mana_cost = card["card_faces"][0].get("mana_cost")
@@ -107,6 +110,13 @@ def map_scryfall_card(card: Dict[str, Any]) -> Dict[str, Any]:
         "type_line": type_line,
         "oracle_text": oracle_text,
         "colors": colors,
+        "cmc": cmc,
+        "color_identity": color_identity,
+        "prices": {
+            "usd": prices.get("usd"),
+            "eur": prices.get("eur"),
+            "tix": prices.get("tix"),
+        },
         "image_small": image_front_small,  # legacy field used by UI
         "image_front_small": image_front_small,
         "image_front_normal": image_front_normal,
@@ -213,6 +223,50 @@ def delete_deck(deck_id: str) -> Dict[str, bool]:
         raise HTTPException(status_code=500, detail="Database not configured")
     res = db["deck"].delete_one({"_id": ObjectId(deck_id)})
     return {"deleted": res.deleted_count > 0}
+
+
+# Commander validation
+class CommanderValidationRequest(BaseModel):
+    format: str
+    commander_colors: Optional[List[str]] = None
+    cards: List[DeckCard]
+
+
+@app.post("/api/validate/commander")
+def validate_commander(payload: CommanderValidationRequest) -> Dict[str, Any]:
+    """Validate commander deck rules: singleton and color identity."""
+    if payload.format != "commander":
+        return {"warnings": [], "errors": []}
+
+    warnings: List[str] = []
+    errors: List[str] = []
+
+    # Determine commander colors if provided; otherwise infer from deck commander if present
+    allowed_colors = set((payload.commander_colors or []))
+
+    # Singleton enforcement (except basic lands)
+    basics = {"Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes"}
+    name_counts: Dict[str, int] = {}
+    for c in payload.cards:
+        name_counts[c.name] = name_counts.get(c.name, 0) + (c.quantity or 1)
+        # color identity check if commander colors specified
+        if allowed_colors:
+            ci = set(c.color_identity or [])
+            if not ci.issubset(allowed_colors) and c.name not in basics:
+                warnings.append(f"Color identity mismatch: {c.name} ({sorted(list(ci))}) not within commander colors {sorted(list(allowed_colors))}")
+
+    for name, qty in name_counts.items():
+        if name in basics:
+            continue
+        if qty > 1:
+            warnings.append(f"Singleton rule: {name} appears {qty}x")
+
+    # Deck size suggestion
+    total = sum(c.quantity or 1 for c in payload.cards)
+    if total < 100:
+        warnings.append(f"Deck has {total} cards; Commander recommends 100 including commander.")
+
+    return {"warnings": warnings, "errors": errors}
 
 
 @app.get("/test")

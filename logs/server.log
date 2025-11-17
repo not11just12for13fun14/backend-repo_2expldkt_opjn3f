@@ -1,13 +1,11 @@
 INFO:     Will watch for changes in these directories: ['/home/workspace']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [305] using StatReload
-INFO:     Started server process [307]
+INFO:     Started reloader process [390] using StatReload
+INFO:     Started server process [392]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     172.20.0.1:41144 - "HEAD / HTTP/1.1" 405 Method Not Allowed
-INFO:     172.20.0.1:41150 - "GET /api/decks HTTP/1.1" 200 OK
-INFO:     172.20.0.1:41150 - "GET /api/decks HTTP/1.1" 200 OK
-INFO:     172.20.0.1:54234 - "GET /api/decks HTTP/1.1" 200 OK
-INFO:     172.20.0.1:54234 - "GET /api/decks HTTP/1.1" 200 OK
-INFO:     172.20.0.1:49182 - "GET /api/cards/search?q=nashi HTTP/1.1" 200 OK
-INFO:     172.20.0.1:49182 - "GET /api/cards/a47b49c4-6adb-445b-b0f1-e0391c2f08cf HTTP/1.1" 200 OK
+INFO:     172.20.0.1:39206 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+INFO:     172.20.0.1:39210 - "GET /api/decks HTTP/1.1" 200 OK
+INFO:     172.20.0.1:39210 - "GET /api/decks HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46710 - "GET /api/decks HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46710 - "GET /api/decks HTTP/1.1" 200 OK
