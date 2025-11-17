@@ -55,23 +55,64 @@ def serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
 SCRYFALL_API = "https://api.scryfall.com"
 
 
+def _face_images(face: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    img_small = face.get("image_uris", {}).get("small") if face.get("image_uris") else None
+    img_normal = face.get("image_uris", {}).get("normal") if face.get("image_uris") else None
+    return {
+        "small": img_small,
+        "normal": img_normal,
+    }
+
+
 def map_scryfall_card(card: Dict[str, Any]) -> Dict[str, Any]:
-    # Choose an image: for double-faced, take first face small image if available
-    image_small = None
-    if card.get("image_uris") and card["image_uris"].get("small"):
-        image_small = card["image_uris"]["small"]
+    """Return a UI-friendly subset including front/back images when present."""
+    image_front_small = None
+    image_front_normal = None
+    image_back_small = None
+    image_back_normal = None
+
+    if card.get("image_uris"):
+        image_front_small = card["image_uris"].get("small")
+        image_front_normal = card["image_uris"].get("normal")
     elif card.get("card_faces") and len(card["card_faces"]) > 0:
-        face = card["card_faces"][0]
-        if face.get("image_uris") and face["image_uris"].get("small"):
-            image_small = face["image_uris"]["small"]
+        face0 = card["card_faces"][0]
+        imgs0 = _face_images(face0)
+        image_front_small = imgs0["small"]
+        image_front_normal = imgs0["normal"]
+
+    # Back face
+    if card.get("card_faces") and len(card["card_faces"]) > 1:
+        face1 = card["card_faces"][1]
+        imgs1 = _face_images(face1)
+        image_back_small = imgs1["small"]
+        image_back_normal = imgs1["normal"]
+
+    # Text fields prefer full card fields, fallback to first face
+    mana_cost = card.get("mana_cost")
+    type_line = card.get("type_line")
+    oracle_text = card.get("oracle_text")
+    colors = card.get("colors")
+
+    if not mana_cost and card.get("card_faces"):
+        mana_cost = card["card_faces"][0].get("mana_cost")
+    if not type_line and card.get("card_faces"):
+        type_line = card["card_faces"][0].get("type_line")
+    if not oracle_text and card.get("card_faces"):
+        oracle_text = card["card_faces"][0].get("oracle_text")
 
     return {
         "scryfall_id": card.get("id"),
         "name": card.get("name"),
-        "mana_cost": card.get("mana_cost"),
-        "type_line": card.get("type_line"),
-        "colors": card.get("colors"),
-        "image_small": image_small,
+        "mana_cost": mana_cost,
+        "type_line": type_line,
+        "oracle_text": oracle_text,
+        "colors": colors,
+        "image_small": image_front_small,  # legacy field used by UI
+        "image_front_small": image_front_small,
+        "image_front_normal": image_front_normal,
+        "image_back_small": image_back_small,
+        "image_back_normal": image_back_normal,
+        "has_back": bool(image_back_small or image_back_normal),
     }
 
 
@@ -86,7 +127,11 @@ def search_cards(q: str, page: int = 1) -> Dict[str, Any]:
     try:
         resp = requests.get(f"{SCRYFALL_API}/cards/search", params={"q": q, "page": page}, timeout=10)
         if resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=resp.json().get("details", "Scryfall error"))
+            try:
+                detail = resp.json().get("details", "Scryfall error")
+            except Exception:
+                detail = "Scryfall error"
+            raise HTTPException(status_code=resp.status_code, detail=detail)
         data = resp.json()
         mapped = [map_scryfall_card(c) for c in data.get("data", [])]
         return {
@@ -105,7 +150,8 @@ def get_card(scryfall_id: str) -> Dict[str, Any]:
     resp = requests.get(f"{SCRYFALL_API}/cards/{scryfall_id}", timeout=10)
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail="Card not found")
-    return map_scryfall_card(resp.json())
+    card = resp.json()
+    return map_scryfall_card(card)
 
 
 # Deck endpoints
@@ -149,7 +195,12 @@ def update_deck(deck_id: str, payload: DeckUpdate) -> Dict[str, Any]:
     update_doc: Dict[str, Any] = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
     if not update_doc:
         return {"updated": False}
-    update_doc["updated_at"] = requests.utils.datetime.datetime.utcnow()
+    # naive timestamp update
+    try:
+        from datetime import datetime
+        update_doc["updated_at"] = datetime.utcnow()
+    except Exception:
+        pass
     res = db["deck"].update_one({"_id": ObjectId(deck_id)}, {"$set": update_doc})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Deck not found")
