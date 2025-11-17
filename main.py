@@ -1,8 +1,16 @@
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional, Any, Dict
 
-app = FastAPI()
+import requests
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from bson import ObjectId
+
+from database import db, create_document
+from schemas import Deck, DeckCard
+
+app = FastAPI(title="MTG Deck Builder API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,17 +20,152 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Utils
+class PyObjectId(ObjectId):
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        if isinstance(v, ObjectId):
+            return v
+        if not ObjectId.is_valid(v):
+            raise ValueError("Invalid ObjectId")
+        return ObjectId(v)
+
+
+def serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    if not doc:
+        return doc
+    doc = dict(doc)
+    if doc.get("_id"):
+        doc["id"] = str(doc.pop("_id"))
+    # Convert any ObjectIds nested (defensive)
+    for k, v in list(doc.items()):
+        if isinstance(v, ObjectId):
+            doc[k] = str(v)
+        if isinstance(v, list):
+            doc[k] = [str(x) if isinstance(x, ObjectId) else x for x in v]
+    return doc
+
+
+# Scryfall helpers
+SCRYFALL_API = "https://api.scryfall.com"
+
+
+def map_scryfall_card(card: Dict[str, Any]) -> Dict[str, Any]:
+    # Choose an image: for double-faced, take first face small image if available
+    image_small = None
+    if card.get("image_uris") and card["image_uris"].get("small"):
+        image_small = card["image_uris"]["small"]
+    elif card.get("card_faces") and len(card["card_faces"]) > 0:
+        face = card["card_faces"][0]
+        if face.get("image_uris") and face["image_uris"].get("small"):
+            image_small = face["image_uris"]["small"]
+
+    return {
+        "scryfall_id": card.get("id"),
+        "name": card.get("name"),
+        "mana_cost": card.get("mana_cost"),
+        "type_line": card.get("type_line"),
+        "colors": card.get("colors"),
+        "image_small": image_small,
+    }
+
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {"message": "MTG Deck Builder API is running"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+
+@app.get("/api/cards/search")
+def search_cards(q: str, page: int = 1) -> Dict[str, Any]:
+    """Proxy search to Scryfall, returning trimmed results for UI."""
+    try:
+        resp = requests.get(f"{SCRYFALL_API}/cards/search", params={"q": q, "page": page}, timeout=10)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.json().get("details", "Scryfall error"))
+        data = resp.json()
+        mapped = [map_scryfall_card(c) for c in data.get("data", [])]
+        return {
+            "object": "list",
+            "total_cards": data.get("total_cards"),
+            "has_more": data.get("has_more", False),
+            "next_page": data.get("next_page"),
+            "data": mapped,
+        }
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="Scryfall request timed out")
+
+
+@app.get("/api/cards/{scryfall_id}")
+def get_card(scryfall_id: str) -> Dict[str, Any]:
+    resp = requests.get(f"{SCRYFALL_API}/cards/{scryfall_id}", timeout=10)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Card not found")
+    return map_scryfall_card(resp.json())
+
+
+# Deck endpoints
+@app.post("/api/decks")
+def create_deck(deck: Deck) -> Dict[str, str]:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    deck_id = create_document("deck", deck)
+    return {"id": deck_id}
+
+
+@app.get("/api/decks")
+def list_decks() -> List[Dict[str, Any]]:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    docs = db["deck"].find().sort("updated_at", -1)
+    return [serialize_doc(d) for d in docs]
+
+
+@app.get("/api/decks/{deck_id}")
+def get_deck(deck_id: str) -> Dict[str, Any]:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    doc = db["deck"].find_one({"_id": ObjectId(deck_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    return serialize_doc(doc)
+
+
+class DeckUpdate(BaseModel):
+    name: Optional[str] = None
+    format: Optional[str] = None
+    description: Optional[str] = None
+    cards: Optional[List[DeckCard]] = None
+
+
+@app.put("/api/decks/{deck_id}")
+def update_deck(deck_id: str, payload: DeckUpdate) -> Dict[str, Any]:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    update_doc: Dict[str, Any] = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if not update_doc:
+        return {"updated": False}
+    update_doc["updated_at"] = requests.utils.datetime.datetime.utcnow()
+    res = db["deck"].update_one({"_id": ObjectId(deck_id)}, {"$set": update_doc})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    return {"updated": res.modified_count > 0}
+
+
+@app.delete("/api/decks/{deck_id}")
+def delete_deck(deck_id: str) -> Dict[str, bool]:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    res = db["deck"].delete_one({"_id": ObjectId(deck_id)})
+    return {"deleted": res.deleted_count > 0}
+
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
     response = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
@@ -31,37 +174,18 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
+            response["database"] = "✅ Connected"
+            response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
+            response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
+                response["collections"] = collections[:10]
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
     return response
 
 
